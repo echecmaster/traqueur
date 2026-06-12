@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Puissance 4 - Contrôle Gestuel Asymétrique</title>
+    <!-- Bibliothèques d'IA MediaPipe : Caméra et Mains -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #0b0c10;
+            height: 100vh;
+            width: 100vw;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Canvas principal pour le jeu */
+        #game-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 50;
+        }
+
+        /* Cadre de la caméra miniature en haut à droite */
+        .camera-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 180px;
+            height: 135px;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            z-index: 1000;
+            opacity: 0.7;
+            transition: opacity 0.3s ease, border-color 0.3s ease;
+        }
+        .camera-container:hover {
+            opacity: 1;
+            border-color: #00ffcc;
+        }
+        #webcam, #output_canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            transform: scaleX(-1); /* Effet miroir */
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        /* Guide d'utilisation en haut à gauche */
+        #user-guide {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(10px);
+            padding: 15px 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 1000;
+            max-width: 340px;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            pointer-events: none;
+        }
+        .guide-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .guide-item:last-child {
+            margin-bottom: 0;
+        }
+        .color-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 10px;
+            flex-shrink: 0;
+        }
+        .dot-blue { background-color: #3399ff; box-shadow: 0 0 8px #3399ff; }
+        .dot-red { background-color: #ff3366; box-shadow: 0 0 8px #ff3366; }
+
+        /* HUD Status */
+        #game-status {
+            position: fixed;
+            top: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 2rem;
+            font-weight: bold;
+            color: white;
+            text-shadow: 0 0 15px rgba(255, 255, 255, 0.5);
+            z-index: 1000;
+            pointer-events: none;
+            text-align: center;
+        }
+
+        /* L'UNIQUE CURSEUR VIRTUEL - Piloté par l'index GAUCHE, cliqué par la main DROITE */
+        #virtual-cursor {
+            position: fixed;
+            width: 25px;
+            height: 25px;
+            border: 2px solid white;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 2147483647;
+            transform: translate(-50%, -50%);
+            will-change: left, top;
+            background-color: #d946ef;
+            box-shadow: 0 0 15px #d946ef, 0 0 30px #d946ef;
+            opacity: 0.3;
+            transition: opacity 0.2s ease, transform 0.1s ease, background-color 0.1s;
+        }
+        #virtual-cursor.active {
+            opacity: 1;
+        }
+        #virtual-cursor.clicking {
+            background-color: #ec4899;
+            box-shadow: 0 0 25px #ec4899, 0 0 50px #ec4899;
+            transform: translate(-50%, -50%) scale(0.7);
+        }
+
+        /* Indicateur de chargement initial */
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.2rem;
+            font-weight: 300;
+            color: #00ffcc;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 25px 40px;
+            border-radius: 30px;
+            border: 1px solid rgba(0, 255, 204, 0.3);
+            z-index: 1001;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            pointer-events: none;
+            text-align: center;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="loading">
+        Initialisation du tracking double main...<br>
+        <span style="font-size: 0.9rem; color: #aaa;">Veuillez autoriser l'accès à la caméra.</span>
+    </div>
+
+    <!-- Guide d'utilisation -->
+    <div id="user-guide">
+        <div class="guide-item">
+            <div class="color-dot dot-blue"></div>
+            <span><strong>Main droite (Bleue) :</strong> Déplace le curseur.</span>
+        </div>
+        <div class="guide-item" style="margin-top: 8px;">
+            <div class="color-dot dot-red"></div>
+            <span><strong>Main gauche (Rouge) :</strong> Pincez pour attraper un jeton à droite et le lâcher dans le plateau.</span>
+        </div>
+    </div>
+
+    <!-- Message de statut -->
+    <div id="game-status">À vous de jouer !</div>
+
+    <!-- Caméra miniature -->
+    <div class="camera-container">
+        <video id="webcam" style="display:none;" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <!-- Canvas de jeu -->
+    <canvas id="game-canvas"></canvas>
+
+    <!-- Curseur Virtuel -->
+    <div id="virtual-cursor" style="left: 50%; top: 50%;"></div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const cameraCanvas = document.getElementById('output_canvas');
+        const cameraCtx = cameraCanvas.getContext('2d');
+        const loadingDiv = document.getElementById('loading');
+        const virtualCursor = document.getElementById('virtual-cursor');
+        const statusDiv = document.getElementById('game-status');
+        
+        // Canvas de jeu
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Constantes du Puissance 4
+        const ROWS = 6;
+        const COLS = 7;
+        let CELL_SIZE = 90;
+        let TOKEN_RADIUS = 35;
+        
+        let boardX = 0;
+        let boardY = 0;
+        let boardW = 0;
+        let boardH = 0;
+
+        let stackX = 0;
+        let stackY = 0;
+
+        // Variables d'état du jeu
+        // 0 = vide, 1 = Joueur (Rouge), 2 = Robot (Jaune)
+        let board = Array(ROWS).fill().map(() => Array(COLS).fill(0));
+        let currentPlayer = 1; 
+        let gameState = 'PLAYING'; // PLAYING, ANIMATING, GAME_OVER
+
+        let fallingToken = null; // Gère l'animation de chute {x, y, targetY, row, col, player}
+        let draggedToken = null; // Jeton tenu par le joueur {x, y}
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            // Recalcul de la taille du plateau pour être responsive
+            CELL_SIZE = Math.min(canvas.width / 12, canvas.height / 8);
+            TOKEN_RADIUS = CELL_SIZE * 0.4;
+            
+            boardW = COLS * CELL_SIZE;
+            boardH = ROWS * CELL_SIZE;
+            boardX = (canvas.width - boardW) / 2;
+            boardY = (canvas.height - boardH) / 1.5; // Plus bas pour laisser l'espace de chute
+
+            // Position de la pile de jetons du joueur
+            stackX = canvas.width - (CELL_SIZE * 1.5);
+            stackY = canvas.height / 2;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // État du curseur
+        const cursor = {
+            x: window.innerWidth / 2,
+            y: window.innerHeight / 2,
+            targetX: window.innerWidth / 2,
+            targetY: window.innerHeight / 2,
+            active: false,
+            clicking: false
+        };
+
+        let lastClickingState = false; // Pour détecter l'instant exact du relâchement
+
+        // --- LOGIQUE DU JEU ---
+
+        function getTopRow(col) {
+            for (let r = ROWS - 1; r >= 0; r--) {
+                if (board[r][col] === 0) return r;
+            }
+            return -1; // Colonne pleine
+        }
+
+        function dropToken(col, player) {
+            const row = getTopRow(col);
+            if (row !== -1) {
+                gameState = 'ANIMATING';
+                fallingToken = {
+                    x: boardX + col * CELL_SIZE + CELL_SIZE / 2,
+                    y: boardY - CELL_SIZE, // Commence au-dessus du plateau
+                    targetY: boardY + row * CELL_SIZE + CELL_SIZE / 2,
+                    row: row,
+                    col: col,
+                    player: player,
+                    velocity: 0
+                };
+                if (player === 1) {
+                    statusDiv.innerText = "Le Robot réfléchit...";
+                    statusDiv.style.color = "#ffeb00";
+                }
+            }
+        }
+
+        function checkWin(r, c, player) {
+            const directions = [
+                { dr: 0, dc: 1 },  // Horizontal
+                { dr: 1, dc: 0 },  // Vertical
+                { dr: 1, dc: 1 },  // Diagonale droite
+                { dr: 1, dc: -1 }  // Diagonale gauche
+            ];
+
+            for (let dir of directions) {
+                let count = 1;
+                
+                // Chercher dans un sens
+                let nr = r + dir.dr;
+                let nc = c + dir.dc;
+                while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && board[nr][nc] === player) {
+                    count++;
+                    nr += dir.dr;
+                    nc += dir.dc;
+                }
+                
+                // Chercher dans l'autre sens
+                nr = r - dir.dr;
+                nc = c - dir.dc;
+                while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && board[nr][nc] === player) {
+                    count++;
+                    nr -= dir.dr;
+                    nc -= dir.dc;
+                }
+
+                if (count >= 4) return true;
+            }
+            return false;
+        }
+
+        function resetGame() {
+            board = Array(ROWS).fill().map(() => Array(COLS).fill(0));
+            currentPlayer = 1;
+            gameState = 'PLAYING';
+            statusDiv.innerText = "À vous de jouer !";
+            statusDiv.style.color = "white";
+        }
+
+        // --- INTELLIGENCE ARTIFICIELLE ---
+        function aiTurn() {
+            if (gameState !== 'PLAYING') return;
+
+            // 1. L'IA peut-elle gagner ce tour-ci ?
+            for (let c = 0; c < COLS; c++) {
+                let r = getTopRow(c);
+                if (r !== -1) {
+                    board[r][c] = 2; // Simuler
+                    if (checkWin(r, c, 2)) {
+                        board[r][c] = 0; // Annuler simulation
+                        dropToken(c, 2);
+                        return;
+                    }
+                    board[r][c] = 0;
+                }
+            }
+
+            // 2. Le joueur peut-il gagner au prochain tour ? -> Le bloquer
+            for (let c = 0; c < COLS; c++) {
+                let r = getTopRow(c);
+                if (r !== -1) {
+                    board[r][c] = 1; // Simuler coup du joueur
+                    if (checkWin(r, c, 1)) {
+                        board[r][c] = 0;
+                        dropToken(c, 2);
+                        return;
+                    }
+                    board[r][c] = 0;
+                }
+            }
+
+            // 3. Sinon, jouer de préférence au centre, ou au hasard
+            const preferredCols = [3, 2, 4, 1, 5, 0, 6];
+            for (let c of preferredCols) {
+                if (getTopRow(c) !== -1) {
+                    // Petite chance d'ignorer la priorité pour rendre l'IA moins prévisible
+                    if (Math.random() > 0.2) {
+                        dropToken(c, 2);
+                        return;
+                    }
+                }
+            }
+
+            // Sécurité : jouer la première valide trouvée
+            for (let c = 0; c < COLS; c++) {
+                if (getTopRow(c) !== -1) {
+                    dropToken(c, 2);
+                    return;
+                }
+            }
+        }
+
+        // --- DESSIN DU JEU ---
+        function drawToken(x, y, player, isGlowing = false) {
+            ctx.beginPath();
+            ctx.arc(x, y, TOKEN_RADIUS, 0, Math.PI * 2);
+            
+            if (player === 1) {
+                ctx.fillStyle = '#ff3366'; // Rouge Joueur
+                if (isGlowing) {
+                    ctx.shadowBlur = 20;
+                    ctx.shadowColor = '#ff3366';
+                } else {
+                    ctx.shadowBlur = 0;
+                }
+            } else if (player === 2) {
+                ctx.fillStyle = '#ffeb00'; // Jaune IA
+                if (isGlowing) {
+                    ctx.shadowBlur = 20;
+                    ctx.shadowColor = '#ffeb00';
+                } else {
+                    ctx.shadowBlur = 0;
+                }
+            }
+            
+            ctx.fill();
+            
+            // Effet de brillance interne du jeton
+            ctx.shadowBlur = 0;
+            ctx.beginPath();
+            ctx.arc(x, y, TOKEN_RADIUS * 0.7, 0, Math.PI * 2);
+            ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+            ctx.lineWidth = 4;
+            ctx.stroke();
+        }
+
+        // --- BOUCLE PRINCIPALE (60 FPS) ---
+        function updateGame() {
+            // Effacement
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Amortissement du curseur (Fluidité)
+            cursor.x += (cursor.targetX - cursor.x) * 0.22;
+            cursor.y += (cursor.targetY - cursor.y) * 0.22;
+
+            // Mise à jour DOM du curseur
+            virtualCursor.style.left = `${cursor.x}px`;
+            virtualCursor.style.top = `${cursor.y}px`;
+
+            // --- LOGIQUE D'INTERACTION ---
+            if (gameState === 'PLAYING' && currentPlayer === 1) {
+                // Si on pince au-dessus de la pile de jetons
+                let distToStack = Math.hypot(cursor.x - stackX, cursor.y - stackY);
+                if (cursor.clicking && !lastClickingState && !draggedToken && distToStack < TOKEN_RADIUS * 2) {
+                    draggedToken = { x: cursor.x, y: cursor.y };
+                }
+
+                // Déplacement du jeton tenu
+                if (cursor.clicking && draggedToken) {
+                    draggedToken.x = cursor.x;
+                    draggedToken.y = cursor.y;
+                }
+
+                // Relâchement du jeton
+                if (!cursor.clicking && lastClickingState && draggedToken) {
+                    // Vérifier si on est au-dessus d'une colonne
+                    if (draggedToken.y < boardY + boardH && draggedToken.x >= boardX && draggedToken.x <= boardX + boardW) {
+                        let col = Math.floor((draggedToken.x - boardX) / CELL_SIZE);
+                        if (col >= 0 && col < COLS && getTopRow(col) !== -1) {
+                            dropToken(col, 1);
+                        }
+                    }
+                    draggedToken = null; // Le jeton disparaît s'il est mal lâché
+                }
+            } else if (gameState === 'GAME_OVER') {
+                // Pincer pour rejouer
+                if (cursor.clicking && !lastClickingState) {
+                    resetGame();
+                }
+            }
+
+            lastClickingState = cursor.clicking;
+
+            // --- ANIMATION DE CHUTE ---
+            if (fallingToken) {
+                fallingToken.velocity += 1.5; // Gravité
+                fallingToken.y += fallingToken.velocity;
+                
+                // S'il atteint sa case finale
+                if (fallingToken.y >= fallingToken.targetY) {
+                    // Fixer le jeton dans le tableau
+                    board[fallingToken.row][fallingToken.col] = fallingToken.player;
+                    
+                    // Vérifier la victoire
+                    if (checkWin(fallingToken.row, fallingToken.col, fallingToken.player)) {
+                        gameState = 'GAME_OVER';
+                        if (fallingToken.player === 1) {
+                            statusDiv.innerText = "VOUS AVEZ GAGNÉ ! 🎉\n(Pincez pour rejouer)";
+                            statusDiv.style.color = "#ff3366";
+                        } else {
+                            statusDiv.innerText = "LE ROBOT GAGNE ! 🤖\n(Pincez pour rejouer)";
+                            statusDiv.style.color = "#ffeb00";
+                        }
+                    } else {
+                        // Passer le tour
+                        gameState = 'PLAYING';
+                        currentPlayer = currentPlayer === 1 ? 2 : 1;
+                        if (currentPlayer === 2) {
+                            setTimeout(aiTurn, 600); // L'IA joue après un petit délai
+                        } else {
+                            statusDiv.innerText = "À vous de jouer !";
+                            statusDiv.style.color = "white";
+                        }
+                    }
+                    fallingToken = null;
+                }
+            }
+
+            // --- DESSIN DES ÉLÉMENTS ---
+
+            // 1. Les jetons posés dans le plateau
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c < COLS; c++) {
+                    if (board[r][c] !== 0) {
+                        let cx = boardX + c * CELL_SIZE + CELL_SIZE / 2;
+                        let cy = boardY + r * CELL_SIZE + CELL_SIZE / 2;
+                        drawToken(cx, cy, board[r][c]);
+                    }
+                }
+            }
+
+            // 2. Le jeton en train de tomber
+            if (fallingToken) {
+                drawToken(fallingToken.x, fallingToken.y, fallingToken.player, true);
+            }
+
+            // 3. Le plateau bleu percé (rendu par-dessus les jetons)
+            ctx.fillStyle = '#0a2342';
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = '#3399ff';
+            ctx.beginPath();
+            ctx.rect(boardX, boardY, boardW, boardH);
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c < COLS; c++) {
+                    let cx = boardX + c * CELL_SIZE + CELL_SIZE / 2;
+                    let cy = boardY + r * CELL_SIZE + CELL_SIZE / 2;
+                    ctx.moveTo(cx + TOKEN_RADIUS, cy);
+                    ctx.arc(cx, cy, TOKEN_RADIUS, 0, Math.PI * 2, true); // true = dessine à l'envers pour trouer
+                }
+            }
+            ctx.fill();
+            ctx.shadowBlur = 0; // Reset
+
+            // 4. La pile de jetons du joueur à droite
+            if (currentPlayer === 1 && gameState === 'PLAYING') {
+                let distToStack = Math.hypot(cursor.x - stackX, cursor.y - stackY);
+                let isStackHovered = distToStack < TOKEN_RADIUS * 2;
+                
+                // Effet de pile (plusieurs jetons superposés)
+                drawToken(stackX + 10, stackY + 10, 1);
+                drawToken(stackX + 5, stackY + 5, 1);
+                if (!draggedToken) {
+                    drawToken(stackX, stackY, 1, isStackHovered);
+                }
+            }
+
+            // 5. Le jeton en train d'être tenu
+            if (draggedToken) {
+                // Surligner la colonne ciblée si on est au-dessus
+                if (draggedToken.y < boardY + boardH && draggedToken.x >= boardX && draggedToken.x <= boardX + boardW) {
+                    let col = Math.floor((draggedToken.x - boardX) / CELL_SIZE);
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+                    ctx.fillRect(boardX + col * CELL_SIZE, boardY - CELL_SIZE, CELL_SIZE, boardH + CELL_SIZE);
+                }
+                drawToken(draggedToken.x, draggedToken.y, 1, true);
+            }
+
+            requestAnimationFrame(updateGame);
+        }
+
+        updateGame();
+
+        // --- RETOUR DE L'ANALYSE DES MAINS (MEDIAPIPE) ---
+        function onHandResults(results) {
+            if (loadingDiv) {
+                loadingDiv.style.opacity = '0';
+                setTimeout(() => loadingDiv.remove(), 300);
+            }
+
+            // Dessin sur l'overlay caméra miniature
+            cameraCtx.clearRect(0, 0, cameraCanvas.width, cameraCanvas.height);
+            cameraCtx.drawImage(results.image, 0, 0, cameraCanvas.width, cameraCanvas.height);
+
+            let rightHandFound = false;
+            let leftHandFound = false;
+            let rightHandPinching = false;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+                    const landmarks = results.multiHandLandmarks[i];
+                    const classification = results.multiHandedness[i];
+                    
+                    // Avec l'effet miroir, la main droite physique s'affiche à droite (label 'Right').
+                    const isRightHand = classification.label === 'Right'; 
+
+                    // Gauche = Bleue (mouvement) | Droite = Rouge (action)
+                    const handColor = isRightHand ? "#ff3366" : "#3399ff"; 
+
+                    // Tracé du squelette
+                    cameraCtx.strokeStyle = handColor; 
+                    cameraCtx.lineWidth = 3;
+                    const connections = [
+                        [0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8],
+                        [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], 
+                        [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]
+                    ];
+                    for (const connection of connections) {
+                        const pt1 = landmarks[connection[0]];
+                        const pt2 = landmarks[connection[1]];
+                        cameraCtx.beginPath();
+                        cameraCtx.moveTo(pt1.x * cameraCanvas.width, pt1.y * cameraCanvas.height);
+                        cameraCtx.lineTo(pt2.x * cameraCanvas.width, pt2.y * cameraCanvas.height);
+                        cameraCtx.stroke();
+                    }
+
+                    // --- TRAITEMENT GAUCHE (Mouvement du curseur virtuel) ---
+                    if (!isRightHand) {
+                        leftHandFound = true;
+                        const indexTip = landmarks[8];
+
+                        const rawX = 1 - indexTip.x; 
+                        const rawY = indexTip.y;
+
+                        // Boîte de sensibilité (zone d'action de la main)
+                        const minX = 0.22; 
+                        const maxX = 0.78;
+                        const minY = 0.25;
+                        const maxY = 0.70;
+
+                        let screenX = ((rawX - minX) / (maxX - minX)) * window.innerWidth;
+                        let screenY = ((rawY - minY) / (maxY - minY)) * window.innerHeight;
+
+                        const margin = 15;
+                        cursor.targetX = Math.max(margin, Math.min(screenX, window.innerWidth - margin));
+                        cursor.targetY = Math.max(margin, Math.min(screenY, window.innerHeight - margin));
+                    } 
+                    // --- TRAITEMENT DROITE (Pincement / Clic physique) ---
+                    else {
+                        rightHandFound = true;
+                        const thumbTip = landmarks[4];
+                        const indexTip = landmarks[8];
+
+                        const pinchDistance = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+                        if (pinchDistance < 0.050) {
+                            rightHandPinching = true;
+                        }
+                    }
+                }
+            }
+
+            // Mises à jour d'état pour la boucle de jeu principale
+            cursor.active = leftHandFound;
+            if (cursor.active) {
+                virtualCursor.classList.add('active');
+            } else {
+                virtualCursor.classList.remove('active');
+            }
+
+            cursor.clicking = (rightHandFound && rightHandPinching);
+            if (cursor.clicking) {
+                virtualCursor.classList.add('clicking');
+            } else {
+                virtualCursor.classList.remove('clicking');
+            }
+        }
+
+        // --- DÉMARRAGE DU TRACKING (MEDIAPIPE) ---
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 2, 
+            modelComplexity: 1,
+            minDetectionConfidence: 0.65,
+            minTrackingConfidence: 0.65
+        });
+        hands.onResults(onHandResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        
+        camera.start().catch(err => {
+            console.error(err);
+            loadingDiv.innerText = "Erreur : Impossible d'accéder à la webcam.";
+            loadingDiv.style.color = "#ff4444";
+        });
+    </script>
+</body>
+</html>
